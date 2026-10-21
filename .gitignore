@@ -1,0 +1,30 @@
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+.env
+*.egg-info/
+dist/
+.pytest_cache/
+
+# Generated secret — never commit real values
+deploy/secret.yaml
+
+# SQLite DB (local dev)
+sentinel/sentinel.db
+*.db
+
+# OS / IDE
+.DS_Store
+.vscode/
+.idea/
+
+# Logs
+*.log
+
+# Additional env file variants
+.env.*
+
+# Test coverage
+.coverage
+htmlcov/

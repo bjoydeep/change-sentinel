@@ -1,0 +1,87 @@
+# change-sentinel local dev configuration
+#
+# Used by: make run-local
+# In-cluster: deploy/configmap.yaml is mounted instead (SENTINEL_CONFIG env var)
+# Keep these two files in sync when changing monitoring plans or timing.
+
+watch_label: hub   # routing key for health endpoint (?clusters=hub)
+
+watchers:
+  cr_instances:
+    - group: example.com
+      version: v1
+      plural: widgets
+      kind: Widget
+      namespace: demo-operator-ns
+
+# For local dev: port-forward Thanos and set token
+#   kubectl port-forward -n openshift-monitoring svc/thanos-querier 9091:9091 &
+#   export METRICS_TOKEN=$(oc whoami -t)
+metrics:
+  endpoint: https://thanos-querier.openshift-monitoring.svc.cluster.local:9091
+  token_path:    # leave blank — use METRICS_TOKEN env var for local dev
+  verify_tls: false
+
+llm:
+  base_url: https://api.openai.com/v1
+  model: gpt-4o
+  # api_key read from OPENAI_API_KEY env var
+
+scanner_interval_seconds: 60
+
+monitoring_plans:
+
+  OperatorCR:
+    window_minutes: 5
+    extended_window_minutes: 15
+    poll_interval_seconds: 30
+    checkers:
+      - type: ResourceAccumulationChecker
+        metrics:
+          - query: 'count(kube_secret_info{namespace="{{namespace}}"})'
+            label: kube_secret_count
+          - query: 'count(kube_configmap_info{namespace="{{namespace}}"})'
+            label: kube_configmap_count
+        threshold_slope_per_minute: 0.3
+      - type: MemoryDrift
+        query: 'sum(container_memory_working_set_bytes{namespace="{{namespace}}",container!=""})'
+        label: memory_bytes
+        threshold_slope_per_minute: 524288
+
+  MachineConfig:
+    window_minutes: 30
+    extended_window_minutes: 120
+    poll_interval_seconds: 60
+    checkers:
+      - type: RestartRateSpike
+        query: 'sum(increase(kube_pod_container_status_restarts_total{namespace=~"openshift-.*"}[5m]))'
+        label: restart_delta
+        threshold_zscore: 3.0
+      - type: NodeNotReady
+        query: 'count(kube_node_status_condition{condition="Ready",status="false"}) or vector(0)'
+        label: nodes_not_ready
+        threshold_count: 1
+
+  cluster-monitoring-config:
+    window_minutes: 15
+    extended_window_minutes: 60
+    poll_interval_seconds: 30
+    checkers:
+      - type: MetricsGap
+        query: 'up{job="prometheus-k8s"}'
+        label: prometheus_up
+        threshold_absent_seconds: 120
+      - type: ScrapeTargetLoss
+        query: 'sum(scrape_samples_scraped)'
+        label: scrape_samples
+        threshold_drop_pct: 50
+
+  ImageDigestMirrorSet:
+    window_minutes: 30
+    extended_window_minutes: 120
+    poll_interval_seconds: 60
+    checkers:
+      - type: ImagePullBackOff
+        query: 'count(kube_pod_container_status_waiting_reason{reason="ImagePullBackOff"}) or vector(0)'
+        label: imagepullbackoff_count
+        threshold_zscore: 3.0

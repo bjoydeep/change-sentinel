@@ -1,0 +1,14 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: change-sentinel
+  namespace: change-sentinel
+  labels:
+    app: change-sentinel
+spec:
+  selector:
+    app: change-sentinel
+  ports:
+    - name: http
+      port: 8000
+      targetPort: 8000

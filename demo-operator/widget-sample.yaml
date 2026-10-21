@@ -1,0 +1,19 @@
+apiVersion: example.com/v1
+kind: Widget
+metadata:
+  name: my-widget
+  namespace: demo-operator-ns
+spec:
+  value: "hello-world"
+  description: "Demo widget — updating spec triggers a generation bump that change-sentinel watches"
+
+---
+# Update this to trigger a change-sentinel WatchSession:
+#
+#   kubectl patch widget my-widget -n demo-operator-ns \
+#     --type=merge -p '{"spec":{"value":"hello-world-v2"}}'
+#
+# This bumps metadata.generation (spec changed), which CRInstanceWatcher detects.
+# The operator's reconcile timer was already leaking secrets from the moment
+# the Widget was created — the generation bump is just the trigger for
+# change-sentinel to start watching and capturing baseline.

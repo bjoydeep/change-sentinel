@@ -1,0 +1,86 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: change-sentinel
+  namespace: change-sentinel
+  labels:
+    app: change-sentinel
+spec:
+  replicas: 1           # single replica — SQLite is not safe with multiple writers
+  selector:
+    matchLabels:
+      app: change-sentinel
+  template:
+    metadata:
+      labels:
+        app: change-sentinel
+    spec:
+      serviceAccountName: change-sentinel
+
+      containers:
+        - name: sentinel
+          # Replace with your registry/image after running: make build push
+          image: quay.io/bjoydeep/change-sentinel:latest
+          imagePullPolicy: Always
+          ports:
+            - name: http
+              containerPort: 8000
+
+          env:
+            - name: OPENAI_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: change-sentinel-secrets
+                  key: OPENAI_API_KEY
+            - name: SLACK_WEBHOOK_URL
+              valueFrom:
+                secretKeyRef:
+                  name: change-sentinel-secrets
+                  key: SLACK_WEBHOOK_URL
+                  optional: true
+            - name: SENTINEL_CONFIG
+              value: /etc/sentinel/config.yaml
+            - name: DB_PATH
+              value: /data/sentinel.db
+            - name: LOG_LEVEL
+              value: INFO   # set to DEBUG to log full LLM prompts
+
+          volumeMounts:
+            - name: config
+              mountPath: /etc/sentinel
+              readOnly: true
+            - name: db
+              mountPath: /data
+
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8000
+            initialDelaySeconds: 10
+            periodSeconds: 30
+
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8000
+            initialDelaySeconds: 5
+            periodSeconds: 10
+
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+
+      volumes:
+        - name: config
+          configMap:
+            name: change-sentinel-config
+        - name: db
+          emptyDir: {}
+          # emptyDir: DB is recreated on pod restart — fine for demo.
+          # Switch to a PVC once EBS CSI credentials are refreshed on the cluster:
+          #   persistentVolumeClaim:
+          #     claimName: change-sentinel-db

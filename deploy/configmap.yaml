@@ -1,0 +1,70 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: change-sentinel-config
+  namespace: change-sentinel
+data:
+  config.yaml: |
+    # change-sentinel in-cluster configuration
+    # Mounted at /etc/sentinel/config.yaml by the Deployment
+
+    watch_label: hub          # used in cluster_health and notifications
+
+    watchers:
+      cr_instances:
+        - group: example.com
+          version: v1
+          plural: widgets
+          kind: Widget
+          namespace: demo-operator-ns
+
+    # In-cluster Prometheus service URL (adjust namespace/name to match your install)
+    metrics:
+      endpoint: https://thanos-querier.openshift-monitoring.svc.cluster.local:9091
+      token_path: /var/run/secrets/kubernetes.io/serviceaccount/token
+      verify_tls: false
+      cluster_label: ""
+
+    llm:
+      base_url: https://api.openai.com/v1
+      model: gpt-4o
+      # api_key read from OPENAI_API_KEY env var (injected from Secret)
+
+    scanner_interval_seconds: 60
+
+    monitoring_plans:
+
+      OperatorCR:
+        window_minutes: 5
+        extended_window_minutes: 15
+        poll_interval_seconds: 30
+        checkers:
+          - type: ResourceAccumulationChecker
+            metrics:
+              - query: 'count(kube_secret_info{namespace="{{namespace}}"})'
+                label: kube_secret_count
+              - query: 'count(kube_configmap_info{namespace="{{namespace}}"})'
+                label: kube_configmap_count
+            threshold_slope_per_minute: 0.3
+          - type: APIWriteRateSpike
+            query: 'sum(rate(apiserver_request_total{verb="POST",namespace="{{namespace}}"}[2m]))'
+            label: api_post_rate
+            threshold_zscore: 3.0
+          - type: MemoryDrift
+            query: 'sum(container_memory_working_set_bytes{namespace="{{namespace}}",container!=""})'
+            label: memory_bytes
+            threshold_slope_per_minute: 524288
+
+      MachineConfig:
+        window_minutes: 30
+        extended_window_minutes: 120
+        poll_interval_seconds: 60
+        checkers:
+          - type: RestartRateSpike
+            query: 'sum(increase(kube_pod_container_status_restarts_total{namespace=~"openshift-.*"}[5m]))'
+            label: restart_delta
+            threshold_zscore: 3.0
+          - type: NodeNotReady
+            query: 'count(kube_node_status_condition{condition="Ready",status="false"}) or vector(0)'
+            label: nodes_not_ready
+            threshold_count: 1

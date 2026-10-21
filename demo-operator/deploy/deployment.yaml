@@ -1,0 +1,38 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: widget-operator
+  namespace: demo-operator-ns
+  labels:
+    app: widget-operator
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: widget-operator
+  template:
+    metadata:
+      labels:
+        app: widget-operator
+    spec:
+      serviceAccountName: widget-operator
+
+      containers:
+        - name: operator
+          image: quay.io/bjoydeep/widget-operator:latest
+          imagePullPolicy: Always
+
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 30
+
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 200m
+              memory: 256Mi
