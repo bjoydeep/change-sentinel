@@ -68,86 +68,87 @@ They are separate repos because their lifecycles differ fundamentally:
 
 ## How It Works (Conceptual Flow)
 
-```
-  ┌──────────────────────────────────────────────────────┐
-  │                  CHANGE EVENTS                        │
-  │       Policy · CR · GitOps · Deployment · ...         │
-  └─────────────────────┬────────────────────────────────┘
-                        │ ingest
-                        ▼
-             ┌────────────────────┐
-             │   change_events    │   append-only ledger (DB)
-             └─────────┬──────────┘
-                       │
-                  every 60s
-                       │
-             ┌─────────▼──────────┐
-             │      Scanner       │   dedup · group · storm check
-             └─────────┬──────────┘
-                       │
-                       ▼
-  ┌────────────────────────────────────────────────────────────────┐
-  │                      WatchSession                               │
-  │                                                                  │
-  │  ① Impact Analysis                                               │
-  │    ┌─────────────────────────────────────────────────────────┐  │
-  │    │ Cluster Resolution        DETERMINISTIC                  │  │
-  │    │   Placement → ManagedClusters (kube API lookup)          │  │
-  │    ├─────────────────────────────────────────────────────────┤  │
-  │    │ Observation Scope              ◄─ LLM                   │  │
-  │    │   given: change type + affected clusters                 │  │
-  │    │   returns:                                               │  │
-  │    │     · which namespaces to observe                        │  │
-  │    │     · which API surfaces (kube API, etcd, registry ...)  │  │
-  │    │     · which signals (metrics · event sequences)          │  │
-  │    │     · window duration                                    │  │
-  │    └─────────────────────────────────────────────────────────┘  │
-  │                                                                  │
-  │  ② Baseline Capture  ─────────────  Thanos: T-1h → T-5min      │
-  │                                     what was normal BEFORE?      │
-  │                                                                  │
-  │  ③ Detection Loop            DETERMINISTIC  (every 30s)         │
-  │                                                                  │
-  │     Metrics:                                                     │
-  │       slope > threshold?      ──► fired  (accumulation/drift)   │
-  │       z-score > 3σ?           ──► fired  (spike)                │
-  │       metric absent?          ──► fired  (gap / blackout)       │
-  │       level shift?            ──► fired  (step change)          │
-  │                                                                  │
-  │     Event sequences:                                             │
-  │       expected event missing? ──► fired  (node never Ready)     │
-  │       events out of order?    ──► fired  (drain before config)  │
-  │       unexpected event?       ──► fired  (OOMKill mid-rollout)  │
-  │                                                                  │
-  │     ( CUSUM · changepoint · multi-dim outlier · ... future )    │
-  │                                                                  │
-  │  ④ Correlation               ◄─ LLM ─  is this a real anomaly? │
-  │       all evidence + baseline           caused by the change?   │
-  │       fired + not-fired signals         how severe?             │
-  └──────────────────┬─────────────────────────────────────────────┘
-                     │
-           ┌─────────┴──────────┐
-           ▼                    ▼
-        CLEAR               ANOMALOUS
-           │                    │
-           └─────────┬──────────┘
-                     ▼
-        ┌─────────────────────────┐
-        │     Health Signal       │──► change-first / any pipeline
-        │     + Notification      │──► Slack / PagerDuty
-        └─────────────────────────┘
+Everything runs on the ACM hub cluster. The hub is the control plane —
+it watches managed clusters, queries their metrics via Thanos, and
+surfaces the health signal to any pipeline that asks.
+
+```mermaid
+flowchart TD
+    subgraph Hub["ACM Hub Cluster"]
+        direction TB
+
+        Changes("📍 Opted-in Kubernetes Resources
+on the Hub
+CR spec changed  ·  CronJob fired
+— delivery mechanism unknown —")
+
+        Ledger[("change_events
+append-only ledger")]
+        Scanner["Scanner
+every 60s  ·  dedup  ·  group  ·  storm check"]
+
+        Impact["① Impact Analysis
+───────────────────────────────────
+Cluster Resolution  DETERMINISTIC
+  Placement → ManagedClusters
+───────────────────────────────────
+Observation Scope  ◄── LLM
+  which namespaces · API surfaces
+  which signals · window duration"]
+
+        Baseline["② Baseline Capture
+Thanos: T-1h → T-5min
+what was normal BEFORE the change?"]
+
+        Detection["③ Detection Loop  DETERMINISTIC  every 30s
+─────────────────────────────────────────────
+Metrics:  slope · z-score · absence · level shift
+Events:   missing · out-of-order · unexpected
+( CUSUM · changepoint · multi-dim outlier · ... )"]
+
+        Correlation["④ Correlation  ◄── LLM
+all checker results + baseline
+is this real?  ·  caused by change?  ·  how severe?"]
+
+        HealthDB[("cluster_health")]
+        Thanos["Thanos Querier
+ACM Observability"]
+        LLM(["🤖 LLM"])
+    end
+
+    ManagedClusters("🖥️ Managed Clusters")
+    Pipeline("change-first
+or any pipeline")
+    Notify("📢 Slack / PagerDuty")
+
+    Changes -->|ingest| Ledger
+    Ledger --> Scanner
+    Scanner --> Impact
+    Impact --> Baseline
+    Baseline --> Detection
+    Detection --> Correlation
+    Correlation --> HealthDB
+
+    Impact -->|"Placement resolution"| ManagedClusters
+    Impact <-->|"observation scope"| LLM
+    Baseline <-->|"metric history"| Thanos
+    Detection <-->|"live metrics"| Thanos
+    Correlation <-->|"verdict"| LLM
+
+    HealthDB -->|"CLEAR / ANOMALOUS"| Pipeline
+    HealthDB -->|"ANOMALOUS"| Notify
 ```
 
 **Two LLM calls. Everything in between is deterministic.**
 
-① Impact Analysis combines blast radius and monitoring plan under one umbrella
-because they are the same question: *"given this change, what is the full scope
-of potential impact and what should I observe to detect it?"* Cluster resolution
-is deterministic (Placement lookup); observation scope — which namespaces, API
-surfaces, signals, and window duration — requires LLM domain knowledge.
+**① Impact Analysis** combines blast radius and monitoring plan under one umbrella —
+they are the same question: *"given this change, what is the full scope of potential
+impact and what should I observe to detect it?"* Cluster resolution is deterministic
+(Placement lookup); observation scope — which namespaces, API surfaces, signals,
+and window — requires LLM domain knowledge and would rot if encoded as rules.
 
-③ Detection loop never calls the LLM: it is pure math applied to whatever
-signals the impact analysis specified.
+**③ Detection loop** never calls the LLM: pure math applied to whatever signals
+the impact analysis specified.
 
 ---
 
